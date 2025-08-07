@@ -1,0 +1,96 @@
+from binance.client import Client
+from binance.enums import *
+import pandas as pd
+import ta
+import time
+
+# === SEUS DADOS DE API (NÃO COMPARTILHE COM NINGUÉM) ===
+api_key = 'SUA_API_KEY'
+api_secret = 'SUA_API_SECRET'
+
+client = Client(api_key, api_secret)
+
+# === CONFIGURAÇÕES DO ROBÔ ===
+SYMBOL = 'BTCUSDT'
+INTERVAL = '1h'
+QUANTIDADE_USDT = 10  # quanto você quer usar por trade
+STOP_PERC = 0.01
+ALVO_PERC = 0.015
+
+def get_klines(symbol, interval, limit=100):
+    candles = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(candles, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base', 'taker_buy_quote', 'ignore'
+    ])
+    df['close'] = pd.to_numeric(df['close'])
+    df['high'] = pd.to_numeric(df['high'])
+    df['low'] = pd.to_numeric(df['low'])
+    df['open'] = pd.to_numeric(df['open'])
+    return df
+
+def check_entry(df):
+    df['EMA21'] = ta.trend.ema_indicator(df['close'], window=21)
+    df['EMA50'] = ta.trend.ema_indicator(df['close'], window=50)
+    df['RSI'] = ta.momentum.rsi(df['close'], window=14)
+
+    last = df.iloc[-1]
+
+    cond1 = last['EMA21'] > last['EMA50']
+    cond2 = last['RSI'] < 50 and last['RSI'] > 30
+    cond3 = last['close'] <= last['EMA21']
+
+    return cond1 and cond2 and cond3, last['close']
+
+def executar_trade(preco_entrada):
+    stop = preco_entrada * (1 - STOP_PERC)
+    alvo = preco_entrada * (1 + ALVO_PERC)
+
+    # Cálculo da quantidade a comprar com QUANTIDADE_USDT
+    quantidade = round(QUANTIDADE_USDT / preco_entrada, 6)
+
+    order = client.order_market_buy(
+        symbol=SYMBOL,
+        quantity=quantidade
+    )
+    print("✅ COMPRA EXECUTADA:", order)
+
+    # Agora esperamos até atingir o alvo ou o stop
+    while True:
+        time.sleep(30)  # espera 30s entre verificações
+        price = float(client.get_symbol_ticker(symbol=SYMBOL)['price'])
+        print(f"⏱ Preço atual: {price:.2f} | Alvo: {alvo:.2f} | Stop: {stop:.2f}")
+
+        if price >= alvo:
+            sell = client.order_market_sell(
+                symbol=SYMBOL,
+                quantity=quantidade
+            )
+            print("🏆 VENDA COM LUCRO:", sell)
+            break
+        elif price <= stop:
+            sell = client.order_market_sell(
+                symbol=SYMBOL,
+                quantity=quantidade
+            )
+            print("❌ VENDA COM PREJUÍZO:", sell)
+            break
+
+# === LOOP PRINCIPAL DO BOT ===
+while True:
+    try:
+        df = get_klines(SYMBOL, INTERVAL)
+        pode_entrar, preco = check_entry(df)
+
+        if pode_entrar:
+            print("🎯 Sinal de entrada detectado!")
+            executar_trade(preco)
+        else:
+            print("📉 Nenhum sinal agora...")
+
+        time.sleep(60 * 60)  # espera 1 hora para o próximo candle
+
+    except Exception as e:
+        print("❗Erro:", e)
+        time.sleep(60)
